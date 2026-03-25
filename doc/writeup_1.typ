@@ -1,0 +1,92 @@
+
+
+
+/* test results:
+ * 100000 trials of random vs random with 
+ * komi 0 and board size 3 : P1: 48145, P2: 42865, Ties: 8990
+ *
+1000 games, 3x3 board, 0.0 komi:
+P1: 463, P2: 431, Ties: 106
+1000 games, 3x3 board, 0.5 komi:
+P1: 471, P2: 529, Ties: 0
+1000 games, 3x3 board, 1.0 komi:
+P1: 406, P2: 527, Ties: 67
+1000 games, 3x3 board, 1.5 komi:
+P1: 423, P2: 577, Ties: 0
+1000 games, 3x3 board, 2.0 komi:
+P1: 357, P2: 603, Ties: 40
+1000 games, 3x3 board, 2.5 komi:
+P1: 363, P2: 637, Ties: 0
+1000 games, 3x3 board, 3.0 komi:
+P1: 359, P2: 626, Ties: 15
+1000 games, 4x4 board, 0.0 komi:
+P1: 426, P2: 431, Ties: 143
+1000 games, 4x4 board, 0.5 komi:
+P1: 431, P2: 569, Ties: 0
+1000 games, 4x4 board, 1.0 komi:
+P1: 309, P2: 576, Ties: 115
+1000 games, 4x4 board, 1.5 komi:
+P1: 305, P2: 695, Ties: 0
+1000 games, 4x4 board, 2.0 komi:
+P1: 254, P2: 654, Ties: 92
+1000 games, 4x4 board, 2.5 komi:
+P1: 257, P2: 743, Ties: 0
+1000 games, 4x4 board, 3.0 komi:
+P1: 210, P2: 751, Ties: 39
+1000 games, 5x5 board, 0.0 komi:
+P1: 459, P2: 439, Ties: 102
+1000 games, 5x5 board, 0.5 komi:
+P1: 445, P2: 555, Ties: 0
+1000 games, 5x5 board, 1.0 komi:
+P1: 404, P2: 509, Ties: 87
+1000 games, 5x5 board, 1.5 komi:
+P1: 374, P2: 626, Ties: 0
+1000 games, 5x5 board, 2.0 komi:
+P1: 287, P2: 633, Ties: 80
+1000 games, 5x5 board, 2.5 komi:
+P1: 312, P2: 688, Ties: 0
+1000 games, 5x5 board, 3.0 komi:
+P1: 269, P2: 699, Ties: 32
+1000 games, 6x6 board, 0.0 komi:
+P1: 433, P2: 441, Ties: 126
+1000 games, 6x6 board, 0.5 komi:
+P1: 438, P2: 562, Ties: 0
+1000 games, 6x6 board, 1.0 komi:
+P1: 360, P2: 545, Ties: 95
+1000 games, 6x6 board, 1.5 komi:
+P1: 340, P2: 660, Ties: 0
+1000 games, 6x6 board, 2.0 komi:
+P1: 225, P2: 688, Ties: 87
+1000 games, 6x6 board, 2.5 komi:
+P1: 245, P2: 755, Ties: 0
+1000 games, 6x6 board, 3.0 komi:
+P1: 158, P2: 770, Ties: 72
+1000 games, 7x7 board, 0.0 komi:
+P1: 457, P2: 447, Ties: 96
+1000 games, 7x7 board, 0.5 komi:
+P1: 454, P2: 546, Ties: 0
+1000 games, 7x7 board, 1.0 komi:
+P1: 385, P2: 529, Ties: 86
+1000 games, 7x7 board, 1.5 komi:
+P1: 358, P2: 642, Ties: 0
+1000 games, 7x7 board, 2.0 komi:
+P1: 273, P2: 636, Ties: 91
+1000 games, 7x7 board, 2.5 komi:
+P1: 253, P2: 747, Ties: 0
+1000 games, 7x7 board, 3.0 komi:
+P1: 192, P2: 740, Ties: 68
+1000 games, 8x8 board, 0.0 komi:
+P1: 463, P2: 444, Ties: 93
+1000 games, 8x8 board, 0.5 komi:
+P1: 459, P2: 541, Ties: 0
+1000 games, 8x8 board, 1.0 komi:
+P1: 379, P2: 541, Ties: 80
+1000 games, 8x8 board, 1.5 komi:
+P1: 368, P2: 632, Ties: 0
+1000 games, 8x8 board, 2.0 komi:
+P1: 295, P2: 621, Ties: 84
+1000 games, 8x8 board, 2.5 komi:
+P1: 269, P2: 731, Ties: 0
+1000 games, 8x8 board, 3.0 komi:
+P1: 188, P2: 726, Ties: 86
+ */

@@ -1,7 +1,9 @@
 from enum import Enum
-import os
+import functools
 import random
 from typing import override
+import cProfile
+import pstats
 
 
 #number of stones a player gets based on board size
@@ -35,6 +37,7 @@ class Direction(Enum):
     DOWN  = 2
     LEFT  = 3
 
+DIRECTIONS = list(Direction)
 
 # General purpose menu that takes a dictionary as input, list the keys as options and returns the corresponding entry
 # while checking for errors.
@@ -93,18 +96,23 @@ def generate_drops(board: "Board", square: tuple[int, int], dir : "Direction", p
     # is the wall hard (capstone or edge of board) or soft (standing stone)
     hard = wall is not PieceType.STANDINGSTONE
 
-    output: list[list[int]] = []
     if distance == 0: #handle the case of a single capstone seperately
         if not hard and pickup == 1 and capstone:
-            output.append([1])
+            return [[1]] 
     else:
-        gdhelper(pickup,capstone, distance-1,  hard, output, []) 
+        return gd_cached(pickup,capstone, distance-1,  hard)
+    return []
+
+@functools.cache
+def gd_cached(n:int, capstone:bool, dist:int,hard:bool):
+    output: list[list[int]] = []
+    gd_helper(n,capstone,dist,hard,output,[])
     return output
 
 # Recursively find all possible drops for a given pickup size, n
-def gdhelper(n : int, capstone:bool, dist: int, hard:bool, output:list[list[int]], drops: list[int]):
+def gd_helper(n : int, capstone:bool, dist: int, hard:bool, output:list[list[int]], drops: list[int]):
     if n == 0: #if we run out of stones, add the path we used to get here
-        output.append(drops)
+        output.append(drops.copy())
         return
     elif dist == 0: #if we reach a wall drop all remaining stones (and deal with case where we can squash a standing stone)
         if not hard and capstone and n>1:
@@ -114,11 +122,15 @@ def gdhelper(n : int, capstone:bool, dist: int, hard:bool, output:list[list[int]
 
     # Recur for every possible amount of stones that could have been dropped
     for i in range(1,n+1):
-        gdhelper(n-i, capstone, dist-1, hard, output, drops+[i])
+        drops.append(i)
+        gd_helper(n-i, capstone, dist-1, hard, output, drops)
+        _=drops.pop() # allows us to use append instead of concat which ends up with less copying
 
 
 
 class Piece:
+    __slots__ = ("color", "piece")
+
     def __init__(self, color : Color, piece_type: PieceType):
         self.color: Color = color
         self.piece: PieceType = piece_type
@@ -137,6 +149,7 @@ class Piece:
 #Class that represents a move (placement or real move)
 #It may be wise to create subclasses for placement and movement
 class Move:
+    __slots__ = ("square", "direction", "count", "drops", "stone", "flatten")
     def __init__(self,
                  square:tuple[int,int], 
                  direction: Direction | None = None, 
@@ -149,6 +162,7 @@ class Move:
         self.count: int = count
         self.drops: list[int] | None = drops
         self.stone: PieceType | None= stone if direction is None else None
+        self.flatten: bool = False
 
     #return a string that is this move in PTN (Portable Tak Notation)
     def to_ptn(self) -> str:
@@ -179,10 +193,15 @@ class Move:
                 #so we just concat them all together
                 drops = "".join(map(str, self.drops)) if self.drops is not None else ""
 
-            return count + square + dir + drops
+            #optional mark, but helps when trying to reverse moves and debug
+            if self.flatten:
+                flatten = "*"
+            else:
+                flatten =  ""
+
+            return count + square + dir + drops + flatten
 
 
-#
 class Game:
     def __init__(self, 
                     p1 : "Player | None" = None,
@@ -191,7 +210,8 @@ class Game:
                     komi : float | None = 0,
                     p1_depth : int = DEPTH,
                     p2_depth : int = DEPTH,
-                    board : "Board| None" = None
+                    board : "Board| None" = None,
+                    display_game : bool = False
                  ) : 
         # Get board size if not specified (defaults to 5)
         if board_size is None:
@@ -233,74 +253,109 @@ class Game:
 
         self.current_player: Player = p1
         self.current_opponent: Player = p2
-        self.turn_number : int = 0 
+        self.display_game: bool = display_game
+        self.result_string: str = ""
+        self.turn_number : int = 1
         self.moves : list[Move] = []
 
 
     # Main loop of the game
-    def play(self, display:bool = False):
-        self.opener(display)
-        while not self.is_over():
-            if display: 
+    def play(self):
+        if self.display_game: self.display()
+        self.opener()
+        winner = self.winner()
+        while winner is None:
+            if self.display_game: 
                 self.display()
+
             self.turn()
-        print("Game is over!")
-        self.board.display()
+            winner = self.winner()
+
+        if self.display_game:
+            print("Game is over!")
+            if not winner:
+                print("Tie")
+            else: print("Winner: Player ",winner)
+            self.board.display()
 
     def display(self):
         #print the turn number, which player's turn it is and what the last move was
-        print("Turn ", self.turn_number, "  Current player:", self.current_player.id,"  Previous move: ", self.moves[-1].to_ptn() if self.moves else "n/a")
+        print("="*TERM_WIDTH,"\nTurn ", self.turn_number, "  Current player:", self.current_player.id,"  Previous move: ", self.moves[-1].to_ptn() if self.moves else "n/a")
         #print the board
         self.board.display()
         #print each player, their pieces, their color, and their strategy
         self.current_player.display()
         self.current_opponent.display() 
 
-    def opener(self, display:bool):
-        if display: self.display()
-        move1= self.current_player.get_move(self, opener = True)
-        _=self.board.move(move1, self.current_opponent)
-        if display: self.display() 
-        move2 = self.current_opponent.get_move(self, opener = True)
-        _=self.board.move(move2,self.current_player)
-        if display: self.display()
-        # get move from each player, (p1.get_move() etc.) but swap the Color. 
-        # make it clear that it is the opener to any human player
-        # self.turn_number
+    #Have each player play a stone as the other player (see self.turn())
+    def opener(self):
+        self.turn(True)
+        if self.display_game: self.display()
+        self.turn(True)
+        if self.display_game: self.display()
 
-        pass #TODO:
     
-    def turn(self):
-        while True:
-            move: Move = self.current_player.get_move(self)
-            if self.board.move(move,self.current_player):
+    #Get a turn from a player and swap players
+    def turn(self, opener:bool = False):
+        while True: # loop until a valid move is given
+            player = self.current_player if not opener else self.current_opponent
+            move: Move = self.current_player.get_move(self, opener)
+            if self.board.move(move,player): 
                 self.moves.append(move)
                 break
+
+        #swap players and increase turn num if both have gone
         self.current_player, self.current_opponent = self.current_opponent, self.current_player
         if self.current_player.id == 1:
             self.turn_number += 1
 
 
-    
-    def is_over(self) -> bool: 
-        x = self.board.is_road()
-        if self.board.is_road() != (False, False):
-            print(f"Road win!{x}")
-            return True
-        if self.board.open_spaces() == 0:
-            print("Flat win!")
-            return True
-        if (self.current_player.capstones + self.current_player.normal_stones) == 0:
-            print("current player out of stones!")
-            return True
-        if (self.current_opponent.capstones + self.current_opponent.normal_stones) == 0:
-            print("current opponent out of stones!")
-            return True
-        return False
+    #Check all win conditions. Return id of winner, 0 for tie, None for not over
+    def winner(self) -> int | None: 
+        roads = self.board.is_road()
+        winner: int | None = None
+        result = ""
+        # if both players get a road in the same turn, the current_player (one who did it) should win
+        if roads[self.current_player.piece_color]:
+            if self.display_game: print("Road win!")
+            winner = self.current_player.id
+            result = "R"
 
+        elif roads[self.current_opponent.piece_color]:
+            if self.display_game: print("Road win!")
+            winner = self.current_opponent.id
+            result = "R"
 
+        elif (self.board.open_spaces() == 0 #out of stones or full board
+              or (self.current_player.capstones + self.current_player.normal_stones) == 0
+              or (self.current_opponent.capstones + self.current_opponent.normal_stones) == 0):
+            result = "F"
+            if self.display_game: print("Flat win!")
+            counts = self.board.flat_count()
+            cur_score = counts[self.current_player.piece_color] + self.current_player.komi
+            opp_score = counts[self.current_opponent.piece_color] + self.current_opponent.komi
+            if cur_score == opp_score: # only way to tie
+                self.result_string = "1/2-1/2"
+                return 0
+            if cur_score > opp_score:
+                winner = self.current_player.id
+            else:
+                winner = self.current_opponent.id
+        if winner == 1:
+            self.result_string = result + "-0"
+        elif winner == 2:
+            self.result_string = "0-" + result
+        return winner
 
+    def move_string(self) -> str:
+        output = ""
+        for i,move in enumerate(self.moves):
+            if i%2 == 0:
+                output += str(i+1) + move.to_ptn()
+            else:
+                output += move.to_ptn() + "\n"
 
+        return output + self.result_string
 
 
 
@@ -354,6 +409,7 @@ class Board:
                     if pickup[0].piece != PieceType.CAPSTONE:
                         raise ValueError("Attempted to flatten standing stone with non-capstone")
                     adj_stack[-1].piece = PieceType.FLATSTONE
+                    move.flatten = True
 
                 # print("extending with: ",pickup[0:move.drops[offset-1]]) 
                 adj_stack.extend(pickup[0:move.drops[offset-1]])
@@ -383,10 +439,15 @@ class Board:
         #(or maybe return true if there are any open and false otherwise?)
         return sum(1 for x in self.grid for y in x if not y)
 
-    def is_road(self) -> tuple[bool,bool]: # output is (black?, white?)
+    def flat_count(self):
+        black = sum(1 for x in self.grid for y in x if y and y[-1].color == Color.BLACK and y[-1].piece == PieceType.FLATSTONE)
+        white = sum(1 for x in self.grid for y in x if y and y[-1].color == Color.WHITE and y[-1].piece == PieceType.FLATSTONE)
+        return {Color.BLACK:black, Color.WHITE:white}
+
+    def is_road(self) :
         # return true if there is a roard and false otherwise.
-        #(use bfs from two sides to try to find the other side)
-        #(there may be a way to do it incrementally, like store old bfs and use them instead
+        #(use dfs from two sides to try to find the other side)
+        #(there may be a way to do it incrementally, like store old dfs and use them instead
         #of recalculating every time but idk)
 
         ub =  self.dfs(Direction.UP, Color.BLACK, [], [], (None, 0))
@@ -394,14 +455,10 @@ class Board:
         lb = self.dfs(Direction.LEFT, Color.BLACK, [], [], (self.size-1, None))
         lw =   self.dfs(Direction.LEFT, Color.WHITE, [], [], (self.size-1, None))
 
-        return (ub or lb, uw or lw)
+        return {Color.BLACK:ub or lb, Color.WHITE:uw or lw}
 
 
-
-
-
-
-
+    #PERF: change this to a loop based dfs instead of recursive
     def dfs(self, node: Direction | tuple[int, int], col: Color, stack:list[tuple[int,int]], visited : list[tuple[int,int]], goal:tuple[int|None, int|None] = (None, None)) -> bool:
         match node:
             case Direction.UP:    stack = [(x, self.size-1) for x in range(0,self.size-1)] 
@@ -416,7 +473,7 @@ class Board:
                     return True
                 # add neighbors to stack
                 for i in range(4):
-                    neighbor = self.offset_tile(n, Direction(i))
+                    neighbor = self.offset_tile(n, DIRECTIONS[i])
                     tile = self.get_stack(neighbor)
                     if tile is not None and tile and tile[-1].color == col and tile[-1].piece != PieceType.STANDINGSTONE and neighbor not in visited:
                         stack.append(neighbor)
@@ -429,9 +486,6 @@ class Board:
 
         # Search the next subtree
         return self.dfs(stack.pop(), col, stack, visited, goal)
-
-
-
 
 
 
@@ -474,7 +528,6 @@ class Board:
 
     def enumerate_moves(self, player : "Player", opener:bool = False) -> list[Move]:
         #return a list of all valid moves for the player in current position
-
         moves: list[Move] = []
         # for every square...
         for row in range(self.size):
@@ -490,7 +543,7 @@ class Board:
                 elif stack[-1].color == player.piece_color and not opener: # ... and if it is their color they can move it.
                     for pickup in range(1,min(self.size, len(stack))+1):
                         for i in range(4):
-                            dir = Direction(i)
+                            dir = DIRECTIONS[i]
                             possible_drops = generate_drops(self, square, dir, pickup)
                             for drops in possible_drops:
                                 moves.append(Move(square,dir,pickup, drops)) 
@@ -498,7 +551,8 @@ class Board:
         
 
 
-    #TODO: doesn't need to be a method of board...
+    #TODO: doesn't need to be a method of board..
+    #PERF: one of the most called functions
     def offset_tile(self, tile:tuple[int,int], dir: Direction,  times:int = 1) -> tuple[int,int]:
         match dir:
             case Direction.UP:    return (tile[0], tile[1]+times)
@@ -508,6 +562,7 @@ class Board:
 
     # Returns the stack on the given tile. Returns None if the tile is outside
     # the board area.
+    #PERF: this is the most called function in the program...
     def get_stack(self, tile : tuple[int, int]) -> list[Piece] | None:
         #NOTE: Tile tuple has ints in range [0,size-1] inclusive
         if max(tile) >= self.size or min(tile) < 0: return None
@@ -655,9 +710,41 @@ for _ in range(10):
     print(move.to_ptn())
     game.board.display()
 """
+def run():
+    for size in range (3,4):
+        for k in range(0,1):
+            komi = k/2
+            wins1 = 0
+            wins2 = 0
+            ties = 0
+            games = 10000
+            for _ in range(games):
+                game = Game(RandomPlayer(), RandomPlayer(), display_game=False, board_size=size, komi=komi)
+                # print("Normal stones: ", game.current_player.normal_stones, " Capstones: ", game.current_player.capstones)
+                game.play()
+                #print(game.result_string)
+                match game.winner():
+                    case 1: wins1+=1 
+                    case 2: wins2+=1
+                    case 0: ties+=1
+                    case _: print("GAME ENDED WITH NONE")
 
-for i in range(100):
-    game = Game(RandomPlayer(), RandomPlayer())
-    print("Normal stones: ", game.current_player.normal_stones, " Capstones: ", game.current_player.capstones)
-    game.play(True)
+            print(f"{games} games, {size}x{size} board, {komi} komi:\nP1: {wins1}, P2: {wins2}, Ties: {ties}")
+
+
+if __name__ == "__main__":
+    profiler = cProfile.Profile()
+    profiler.enable()
+
+    run()
+
+    profiler.disable()
+    stats = pstats.Stats(profiler)
+    stats.sort_stats("ncalls").print_stats()
+"""
+OPTIMIZATION IDEAS:
+- cache drops; there are a fairly limmited number of them
+- look into using "__slots__"
+- 
+"""
 

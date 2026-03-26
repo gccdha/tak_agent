@@ -292,7 +292,6 @@ class Game:
         self.turn(True)
         if self.display_game: self.display()
         self.turn(True)
-        if self.display_game: self.display()
 
     
     #Get a turn from a player and swap players
@@ -351,11 +350,11 @@ class Game:
         output = ""
         for i,move in enumerate(self.moves):
             if i%2 == 0:
-                output += str(i+1) + move.to_ptn()
+                output += str((i+2)//2) + ". " + move.to_ptn()
             else:
-                output += move.to_ptn() + "\n"
+                output += " " + move.to_ptn() + "\n"
 
-        return output + self.result_string
+        return output + " " + self.result_string
 
 
 
@@ -425,11 +424,14 @@ class Board:
 
 
     
-    def test_move(self, move:Move, player: "Player") -> bool: 
+    def test_move(self, move:Move, player: "Player") -> bool: #TODO: don't think this works 
         # return true if a move can be made and false if it can't be
         # (should replace this in the future with just not allowing bad input)
+        
+        moves = self.enumerate_moves(player)
 
-        if move in self.enumerate_moves(player):
+
+        if move in moves:
             return True
         else:
             return False
@@ -460,11 +462,13 @@ class Board:
 
     #PERF: change this to a loop based dfs instead of recursive
     def dfs(self, node: Direction | tuple[int, int], col: Color, stack:list[tuple[int,int]], visited : list[tuple[int,int]], goal:tuple[int|None, int|None] = (None, None)) -> bool:
+        #TODO: VERY RUSHED JOB NEED TO FIX ASAP
+        valid_tile = lambda a, b : self.get_stack((a, b)) and self.get_stack((a, b))[-1].piece != PieceType.STANDINGSTONE and self.get_stack((a, b))[-1].color == col
         match node:
-            case Direction.UP:    stack = [(x, self.size-1) for x in range(0,self.size-1)] 
-            case Direction.RIGHT: stack = [(self.size - 1, y) for y in range(0,self.size-1)]
-            case Direction.DOWN:  stack = [(x, 0) for x in range(0,self.size-1)] 
-            case Direction.LEFT:  stack = [(0,y) for y in range(0,self.size-1)] 
+            case Direction.UP:    stack = [(x, self.size-1) for x in range(0,self.size) if valid_tile(x,self.size-1)] 
+            case Direction.RIGHT: stack = [(self.size - 1, y) for y in range(0,self.size) if valid_tile(self.size -1, y)]
+            case Direction.DOWN:  stack = [(x, 0) for x in range(0,self.size) if valid_tile(x,0)] 
+            case Direction.LEFT:  stack = [(0,y) for y in range(0,self.size) if valid_tile(0,y)] 
             case n:
                 visited.append(n)
                 # return true if the traversal reaches the goal row/column
@@ -593,9 +597,9 @@ class Player:
 
     def display(self) -> None:
         if self.piece_color == Color.BLACK:
-            color = B_ON_W
-        else:
             color = W_ON_B
+        else:
+            color = B_ON_W
         strat = self.player_type()
         print(f"{color}Player:{self.id}  Strategy:{strat}, Normal Stones: {self.normal_stones}  Capstones: {self.capstones}{RESET}")
 
@@ -710,6 +714,7 @@ for _ in range(10):
     print(move.to_ptn())
     game.board.display()
 """
+"""
 def run():
     for size in range (3,4):
         for k in range(0,1):
@@ -730,8 +735,12 @@ def run():
                     case _: print("GAME ENDED WITH NONE")
 
             print(f"{games} games, {size}x{size} board, {komi} komi:\nP1: {wins1}, P2: {wins2}, Ties: {ties}")
+"""
 
 
+
+
+"""
 if __name__ == "__main__":
     profiler = cProfile.Profile()
     profiler.enable()
@@ -742,9 +751,12 @@ if __name__ == "__main__":
     stats = pstats.Stats(profiler)
     stats.sort_stats("ncalls").print_stats()
 """
-OPTIMIZATION IDEAS:
-- cache drops; there are a fairly limmited number of them
-- look into using "__slots__"
-- 
-"""
 
+
+
+
+
+
+game = Game(None, None, None, None, DEPTH, DEPTH, None, True)
+game.play()
+print(game.move_string())

@@ -1,5 +1,7 @@
+from copy import copy, deepcopy
 from enum import Enum
 import functools
+from operator import itemgetter
 import random
 from typing import override
 import cProfile
@@ -11,7 +13,7 @@ CAPSTONES = {3:0, 4:0, 5:1, 6:1, 7:2, 8:2}
 NORMAL_STONES = {3:10, 4:15, 5:21, 6:30, 7:40, 8:50}
 
 #default depth for minimax
-DEPTH = 3
+DEPTH = 2
 
 #ANSI color escapes
 B_ON_W = "\033[30;107m"
@@ -262,7 +264,7 @@ class Game:
     # Main loop of the game
     def play(self):
         if self.display_game: self.display()
-        self.opener()
+        # self.opener() #TODO: make minimax work with opener
         winner = self.winner()
         while winner is None:
             if self.display_game: 
@@ -668,19 +670,80 @@ class MinimaxPlayer(Player):
     @override
     def get_move(self, game : Game, opener:bool = False) -> Move:#TODO:
         assert self.depth is not None
-        return self.minimax(0, self.depth, game.board )[1]
+        return self.minimax(game.board,self.depth,game.current_opponent, True)[1]
 
-
-    def minimax(self, depth:int, max_depth:int, board:Board) -> tuple[int, Move]: #TODO: (this is the recursive one)
+    #TODO:  There are still some bugs (3 look ahead looses to 2 lookahead on a 3x3 board?)
+    # also would be a good idea to introduce some randomness if there are multiple equally good moves
+    # also should probably disincentivise making super tall stacks but idk...
+    # absolutely need to optimize much better (and do alpha-beta...)
+    # find a way to make the agent not give up (currently the slight penalty for longer games means that 
+    # if all paths would lead to the opponent winning based on the agent's play, it will end the game asap,
+    # but it should instead try to prolong the game to see if the the opponent makes a mistake)
+    def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool) -> tuple[float, Move]: #TODO: There is so much wrong with this but it works...
         # if depth%2 == 0: max; else: min (or something like that) 
         # This is just raw minimax, we can add a different agent for alpha-beta if there is time
         # for move in board.enumerate_moves(self): min/max of minimax(depth-1, board.copy.move(move))
-        raise NotImplementedError
 
+        #check if game is over. if so, return evaluation of current board
+        roads = board.is_road()
+        if (roads[self.piece_color] 
+            or roads[op.piece_color]
+            or self.capstones + self.normal_stones == 0 
+            or op.capstones + op.normal_stones == 0
+            or board.open_spaces() == 0):
+
+            return (self.evaluate_board(board, 0, own_turn), Move((-1,-1))) #TODO: Komi
+
+        moves: list[tuple[float,Move]] = [] #TODO: use some other data structure to keep it sorted (fib heap?)
+
+        player = self if own_turn else op
+        #PERF: instead of copying the object, we could instead add a method to undo a move
+        for move in board.enumerate_moves(player):
+            new_board = deepcopy(board) #TODO: does it need to be a deepcopy?
+            current_player = deepcopy(self if own_turn else op)
+            _=new_board.move(move,current_player)
+            if max_depth <= 0: # evaluate move directly if we reached max depth
+                value = self.evaluate_board(new_board, 0, own_turn) #TODO: add komi somehow
+            else:
+                value =  (current_player if own_turn else self).minimax(new_board, max_depth-1, op, not own_turn)[0]-0.01  #-0.1 should ensure earlier wins are always chosen over later ones
+            #print(" "*4*(self.depth-max_depth)+f"testing move: {move.to_ptn()}. value: {value}")
+            moves.append((value, move))
+        # print("Moves:")
+        # for m in moves:
+        #     print("(",m[0],",",m[1].to_ptn(),")")
+        if own_turn:
+            return max(moves, key=itemgetter(0))
+        else:
+            return min(moves, key=itemgetter(0))
+
+
+        
+    #evaluate the board based on what I think is important
+    def evaluate_board(self, board:Board, komi:float, own_turn:bool, ) -> float:
+        op_color = Color((self.piece_color.value + 1)%2)
+        flat_count = board.flat_count() #dict color  -> int
+        flat_score = flat_count[self.piece_color]-flat_count[op_color]
+        
+        #TODO: test different values for roads (maybe make based on board size?)
+        road = board.is_road()
+        road_score = 0
+        if road[self.piece_color]:
+            road_score += 100
+        if road[op_color]:
+            road_score -= 100
+            if road_score == 0: # if we make the move we win otherwise we lose
+                road_score += -100 if not own_turn else 100 
+
+        # Ideas: Hard caps, discourage stacks above carry limit, add small bonus for walls
+        # add small punishment every turn to force offensive play, add bonus for the number of 
+        # posible moves (and punish giving op more move options)
+        
+        return flat_score if road_score == 0 else road_score
+
+            
     @override
     def player_type(self) -> str:
         return "Minimax (Depth:" + str(self.depth) + ")"
-
 
 
 
@@ -752,11 +815,6 @@ if __name__ == "__main__":
     stats.sort_stats("ncalls").print_stats()
 """
 
-
-
-
-
-
-game = Game(None, None, None, None, DEPTH, DEPTH, None, True)
+game = Game(MinimaxPlayer(), MinimaxPlayer(), 3, 0, DEPTH, DEPTH, None, True)
 game.play()
 print(game.move_string())

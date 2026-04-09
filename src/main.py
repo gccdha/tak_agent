@@ -1,7 +1,9 @@
 from copy import copy, deepcopy
 from enum import Enum
 import functools
+from math import inf
 from operator import itemgetter
+from queue import PriorityQueue
 import random
 from typing import override
 import cProfile
@@ -13,14 +15,15 @@ CAPSTONES = {3:0, 4:0, 5:1, 6:1, 7:2, 8:2}
 NORMAL_STONES = {3:10, 4:15, 5:21, 6:30, 7:40, 8:50}
 
 #default depth for minimax
-DEPTH = 2
+DEPTH = 3
+MINIMAX_DECAY = 1.0
 
 #ANSI color escapes
 B_ON_W = "\033[30;107m"
 W_ON_B = "\033[97;40m"
 RESET = "\033[0m"
 
-#max width of board
+#max width of board (in characters)
 TERM_WIDTH = 80
 
 
@@ -41,8 +44,9 @@ class Direction(Enum):
 
 DIRECTIONS = list(Direction)
 
+
 # General purpose menu that takes a dictionary as input, list the keys as options and returns the corresponding entry
-# while checking for errors.
+# while checking for invalid input.
 def menu(params, message: str | None = None):                                               # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     keys = list(params.keys())                                                          # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
     numkeys= len(keys)                                                                        # pyright: ignore[reportUnknownArgumentType]
@@ -51,10 +55,12 @@ def menu(params, message: str | None = None):                                   
             print(message)
         else:
             print("Choose one of the following:")
-
+        
+        #print options
         for i,p in enumerate(keys):                                                                # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
             print(f"{i}) {p}")
         
+        #get and validate input. repeat until input is valid
         try:
             choice : int = int(input())
         except ValueError:
@@ -65,8 +71,9 @@ def menu(params, message: str | None = None):                                   
             else:
                 print(f"ERROR: Please enter a number between 0 and {numkeys-1} (inclusive)")
 
-# Menu specifically for getting the sequence of drops. (WARN: doesn't check if the drops make sense!) 
-def drop_menu() -> list[int]: # TODO: Make this way better, with its own ui and everything
+# Menu specifically for getting the sequence of drops. (WARN: doesn't check if the drops make sense! 
+# It is up to the user to ensure that the drops are possible for the piece they want to move)
+def drop_menu() -> list[int]: #TODO Make this way better, with its own ui and validation
     i = 1
     output: list[int] = []
     while True:
@@ -79,8 +86,7 @@ def drop_menu() -> list[int]: # TODO: Make this way better, with its own ui and 
         else:
             match choice:
                 case -1: return output
-                case 0:
-                    print("ERROR: Please enter a number greater than 0")
+                case 0: print("ERROR: Please enter a number greater than 0")
                 case x if x < 0: print("ERROR: Please enter a non-negative number")
                 case _: output.append(choice); i+=1
 
@@ -105,6 +111,7 @@ def generate_drops(board: "Board", square: tuple[int, int], dir : "Direction", p
         return gd_cached(pickup,capstone, distance-1,  hard)
     return []
 
+#We can cache the output of this since there are a limited number of possible drops
 @functools.cache
 def gd_cached(n:int, capstone:bool, dist:int,hard:bool):
     output: list[list[int]] = []
@@ -122,7 +129,7 @@ def gd_helper(n : int, capstone:bool, dist: int, hard:bool, output:list[list[int
         output.append(drops+[n])
         return
 
-    # Recur for every possible amount of stones that could have been dropped
+    #Recurse for every possible amount of stones that could have been dropped
     for i in range(1,n+1):
         drops.append(i)
         gd_helper(n-i, capstone, dist-1, hard, output, drops)
@@ -192,10 +199,10 @@ class Move:
                 drops = ""
             else:
                 #drops are always 1 digit numbers because the max board size is 8
-                #so we just concat them all together
+                #so it is unambiguous to just concat them all together
                 drops = "".join(map(str, self.drops)) if self.drops is not None else ""
 
-            #optional mark, but helps when trying to reverse moves and debug
+            #optional mark for flattening, but helps when trying to reverse moves and debug
             if self.flatten:
                 flatten = "*"
             else:
@@ -348,6 +355,7 @@ class Game:
             self.result_string = "0-" + result
         return winner
 
+    #output the ptn string for the game
     def move_string(self) -> str:
         output = ""
         for i,move in enumerate(self.moves):
@@ -376,7 +384,7 @@ class Board:
 
         stack= self.get_stack(move.square)
         if stack is None:
-            raise ValueError("None stack while getting stack for move");
+            raise ValueError("None stack while getting stack for move")
 
         # for placements
         if move.direction is None:
@@ -386,7 +394,7 @@ class Board:
                 player.normal_stones -=1
 
             if move.stone is None:
-                raise ValueError("Stone not specified for placement")
+                raise ValueError("Stone not specified for placement. Move must have either direction or stone.")
 
             stack.append(Piece(player.piece_color, move.stone))
 
@@ -395,6 +403,7 @@ class Board:
             if move.drops is None:
                 raise ValueError("Trying to move with None drops")
             pickup = stack[-move.count:]
+            assert move.count <= len(stack)
             del stack[-move.count:] #TODO: make sure this does what you think it does
 
             offset = 1
@@ -404,7 +413,7 @@ class Board:
                 # print("pickup: ", pickup)
                 adj_stack = self.get_stack(self.offset_tile(move.square, move.direction, offset))
                 if adj_stack is None:
-                    raise ValueError("None stack durring drops")
+                    raise ValueError("None stack during drops")
 
                 if adj_stack and adj_stack[-1].piece == PieceType.STANDINGSTONE:
                     if pickup[0].piece != PieceType.CAPSTONE:
@@ -425,9 +434,70 @@ class Board:
         return True
 
 
+    def unmove(self, move : Move, player: "Player"):
+
+        stack = self.get_stack(move.square)
+        if stack is None:
+            raise ValueError("None stack while geting stack for unmove")
+
+        #For Placements
+        if move.direction is None:
+            if move.stone == PieceType.CAPSTONE:
+                player.capstones += 1 
+            else:
+                player.normal_stones += 1
+            
+            if move.stone is None:
+                raise ValueError("Stone not specified for un-placement. Move must have either direction or stone.")
+
+            # make sure that the stone is the correct one
+            assert stack.pop().piece == move.stone
+
+        #For movements
+        else:
+            if move.drops is None:
+                raise ValueError("Trying to unmove with None drops")
+            
+            pickup: list[Piece] = []
+
+            
+            offset = 1
+            for drop in move.drops:
+                adj_stack = self.get_stack(self.offset_tile(move.square, move.direction, offset))
+                if adj_stack is None:
+                    raise ValueError("None stack during undrops")
+
+                dropped = adj_stack[-drop:]
+
+                # dropped.reverse()
+
+                pickup.extend(dropped)
+
+                del adj_stack[-drop:]
+
+                #WARN: this only works if the move has already been used, because that is when
+                #move.flatten is set
+                if move.flatten and len(dropped) == 1 and dropped[0].piece == PieceType.CAPSTONE:
+                    adj_stack[-1].piece = PieceType.STANDINGSTONE
+                    move.flatten = False #is this a good thing to do? idk
+
+                offset += 1 
+
+            if len(pickup) != move.count:
+                raise ValueError("Number of unpickups based on drops is different from move.count")
+
+            stack.extend(pickup)
+
+
+
+            
+
+
+
+
     
+    # return true if a move can be made and false if it can't be
     def test_move(self, move:Move, player: "Player") -> bool: #TODO: don't think this works 
-        # return true if a move can be made and false if it can't be
         # (should replace this in the future with just not allowing bad input)
         
         moves = self.enumerate_moves(player)
@@ -438,18 +508,18 @@ class Board:
         else:
             return False
 
+    #return the number of spaces that don't have any piece on them 
     def open_spaces(self) -> int: 
-        #return the number of spaces that don't have any piece on them 
-        #(or maybe return true if there are any open and false otherwise?)
         return sum(1 for x in self.grid for y in x if not y)
 
+    #return a dict with the color of the player as key and the flat count as the value
     def flat_count(self):
         black = sum(1 for x in self.grid for y in x if y and y[-1].color == Color.BLACK and y[-1].piece == PieceType.FLATSTONE)
         white = sum(1 for x in self.grid for y in x if y and y[-1].color == Color.WHITE and y[-1].piece == PieceType.FLATSTONE)
         return {Color.BLACK:black, Color.WHITE:white}
 
+    # return true if there is a roard and false otherwise.
     def is_road(self) :
-        # return true if there is a roard and false otherwise.
         #(use dfs from two sides to try to find the other side)
         #(there may be a way to do it incrementally, like store old dfs and use them instead
         #of recalculating every time but idk)
@@ -493,17 +563,16 @@ class Board:
         # Search the next subtree
         return self.dfs(stack.pop(), col, stack, visited, goal)
 
-
-
+    #pretty print the board
     def display(self) -> None:
-        global_max = max(max(len(z) for x in self.grid for z in x), 10) 
-        p = min(global_max,((TERM_WIDTH)-1)//self.size-1)
+        global_max = max(max(len(z) for x in self.grid for z in x), 10)  #max height of any stack
+        p = min(global_max,((TERM_WIDTH)-1)//self.size-1) # number of chars of padding on each side of stack characters
         top = " ╭"+ ("─"*(2*p+1)+"┬")*(self.size-1) +"─"*(2*p+1)+"╮"
         mid = " ├"+ ("─"*(2*p+1)+"┼")*(self.size-1) +"─"*(2*p+1)+"┤"
         bot = " ╰"+ ("─"*(2*p+1)+"┴")*(self.size-1) +"─"*(2*p+1)+"╯"
         letters = " "
         for i in range(self.size):
-            letters = letters + " "*(p+1)+chr(97+i)+" "*(p)
+            letters = letters + " "*(p+1)+chr(97+i)+" "*(p) #letter label for bottom
 
 
         print(top)
@@ -532,8 +601,8 @@ class Board:
         print(letters)
 
 
+    #return a list of all valid moves for the player in current position
     def enumerate_moves(self, player : "Player", opener:bool = False) -> list[Move]:
-        #return a list of all valid moves for the player in current position
         moves: list[Move] = []
         # for every square...
         for row in range(self.size):
@@ -554,9 +623,8 @@ class Board:
                             for drops in possible_drops:
                                 moves.append(Move(square,dir,pickup, drops)) 
         return moves
-        
 
-
+    # gives the tile "times" number of tiles in "dir" direction
     #TODO: doesn't need to be a method of board..
     #PERF: one of the most called functions
     def offset_tile(self, tile:tuple[int,int], dir: Direction,  times:int = 1) -> tuple[int,int]:
@@ -566,33 +634,42 @@ class Board:
             case Direction.DOWN:  return (tile[0], tile[1]-times)
             case Direction.LEFT:  return (tile[0]-times, tile[1])
 
-    # Returns the stack on the given tile. Returns None if the tile is outside
-    # the board area.
+    # Returns the stack on the given tile. Returns None if the tile is outside the board area.
     #PERF: this is the most called function in the program...
     def get_stack(self, tile : tuple[int, int]) -> list[Piece] | None:
         #NOTE: Tile tuple has ints in range [0,size-1] inclusive
         if max(tile) >= self.size or min(tile) < 0: return None
         else: return self.grid[self.size - 1 - tile[1]][tile[0]]
     
-    def distance_to_wall(self,tile:tuple[int,int], dir : Direction) -> tuple[PieceType | None, int]: #(type of wall (none for edge of board), distance)
+    #returns a tuple in the form (type of wall (None for edge of board),  distance to wall)
+    def distance_to_wall(self,tile:tuple[int,int], dir : Direction) -> tuple[PieceType | None, int]:
         for i in range(0,self.size):
             stack = self.get_stack(self.offset_tile(tile, dir,i+1))
-            if stack is None: return (None, i)
+            if stack is None: return (None, i) # wall
             if stack:
                 match stack[-1].piece:
                     case PieceType.FLATSTONE: pass
                     case x: return (x, i)
         return (None, 0)
         
-
+#base player class
 class Player:
-    def __init__(self, piece_color : Color = Color.BLACK, normal_stones : int = 0, capstones : int = 0, komi : float = 0, depth: int = DEPTH, id : int = 0):
+    def __init__(self,
+                 piece_color : Color = Color.BLACK,
+                 normal_stones : int = 0,
+                 capstones : int = 0, komi : float = 0,
+                 depth: int = DEPTH,
+                 id : int = 0,
+                 ab : bool = False
+                 ):
         self.piece_color: Color = piece_color
         self.komi: float = komi
         self.normal_stones: int = normal_stones
         self.capstones: int = capstones
         self.depth: int = depth
         self.id: int = id
+        self.alpha: float | None = -inf if ab else None
+        self.beta: float | None = inf if ab else None
 
     def get_move(self, game : Game, opener:bool = False) -> "Move":   # pyright: ignore[reportUnusedParameter]
         raise NotImplementedError
@@ -612,10 +689,13 @@ class Player:
 
 class HumanPlayer(Player):
     @override
-    def get_move(self, game: Game, opener:bool = False) -> Move: #TODO:: add checking for each part. Add option durring start of game to use PTN
-        # get a move from the player in PTN or just ask for each part
+    #get move from player by asking for each part
+    def get_move(self, game: Game, opener:bool = False) -> Move:
+        #TODO:: add checking for each part. Add option during start of game to use PTN
 
         if opener: print("OPENER: choose a square to place one of your opponent's flatstones on!")
+
+        #Get square
         rows = {chr(ord('A')+x):x for x in range(0,game.board.size)}
         cols = {str(x):x for x in range(0,game.board.size)}
         square: tuple[int, int] = ( 
@@ -626,14 +706,14 @@ class HumanPlayer(Player):
         if opener: return Move(square, stone = PieceType.FLATSTONE)
 
         stack = game.board.get_stack(square)
-        if not stack:
-            #place 
+        if not stack:  #choose piece for placement
             piece = menu({"flatstone":PieceType.FLATSTONE, 
                           "standing stone":PieceType.STANDINGSTONE,
                           "capstone stone":PieceType.CAPSTONE}, "What kind of piece would you like to place?:")
             return Move(square,stone = piece)
-        else:
-            #move
+
+        else: #movement
+
             direction = menu({"up":Direction.UP, "right":Direction.RIGHT,
                               "down":Direction.DOWN, "left":Direction.LEFT},
                              "Chose a direction to move:")
@@ -641,6 +721,7 @@ class HumanPlayer(Player):
             if len(stack) > 1:
                 count = menu({str(x):x for x in range(1,min(game.board.size+1, len(stack)))}, 
                              "How many pieces do you want to grab from this stack?")
+
             drops = drop_menu()
 
             return Move(square, direction, count, drops)
@@ -653,24 +734,23 @@ class HumanPlayer(Player):
 
 class RandomPlayer(Player):
     @override
+    #select random move from list of all possible moves
     def get_move(self, game: Game, opener:bool = False) -> Move:
         moves = game.board.enumerate_moves(self, opener)
         return random.choice(moves)
+
     @override
     def player_type(self) -> str:
         return "Random"
 
-class MinimaxPlayer(Player):
-    def evaluate(self, board: Board) -> int: #TODO:
-        #evaluate a position. could try wall = 1, flat = 2, cap = 3 or just raw controlled area
-        raise NotImplementedError
-    
-    #TODO: optional: make a function that calls an llm api to get a move and see how it does
+class MinimaxPlayer(Player):    
 
     @override
     def get_move(self, game : Game, opener:bool = False) -> Move:#TODO:
         assert self.depth is not None
-        return self.minimax(game.board,self.depth,game.current_opponent, True)[1]
+        v, move = self.minimax(game.board,self.depth,game.current_opponent, True)
+        print("move: ", move.to_ptn(), " value: ", v)
+        return move
 
     #TODO:  There are still some bugs (3 look ahead looses to 2 lookahead on a 3x3 board?)
     # also would be a good idea to introduce some randomness if there are multiple equally good moves
@@ -680,7 +760,6 @@ class MinimaxPlayer(Player):
     # if all paths would lead to the opponent winning based on the agent's play, it will end the game asap,
     # but it should instead try to prolong the game to see if the the opponent makes a mistake)
     def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool) -> tuple[float, Move]: #TODO: There is so much wrong with this but it works...
-        # if depth%2 == 0: max; else: min (or something like that) 
         # This is just raw minimax, we can add a different agent for alpha-beta if there is time
         # for move in board.enumerate_moves(self): min/max of minimax(depth-1, board.copy.move(move))
 
@@ -690,32 +769,50 @@ class MinimaxPlayer(Player):
             or roads[op.piece_color]
             or self.capstones + self.normal_stones == 0 
             or op.capstones + op.normal_stones == 0
-            or board.open_spaces() == 0):
-
+            or board.open_spaces() == 0
+            or max_depth == 0):
             return (self.evaluate_board(board, 0, own_turn), Move((-1,-1))) #TODO: Komi
 
-        moves: list[tuple[float,Move]] = [] #TODO: use some other data structure to keep it sorted (fib heap?)
+        best_moves: list[tuple[float,Move]] = [] #TODO: use a priority Queue and pop into a list until one of the moves is lower scored, then choose randomly from that
+
 
         player = self if own_turn else op
+        possible_moves = board.enumerate_moves(player)
+
+        best_value = float('-inf') if own_turn else float('inf')
+
         #PERF: instead of copying the object, we could instead add a method to undo a move
-        for move in board.enumerate_moves(player):
-            new_board = deepcopy(board) #TODO: does it need to be a deepcopy?
+        for move in possible_moves:
+            #create copy of board and player and make the move
+            new_board = deepcopy(board) 
             current_player = deepcopy(self if own_turn else op)
             _=new_board.move(move,current_player)
-            if max_depth <= 0: # evaluate move directly if we reached max depth
-                value = self.evaluate_board(new_board, 0, own_turn) #TODO: add komi somehow
-            else:
-                value =  (current_player if own_turn else self).minimax(new_board, max_depth-1, op, not own_turn)[0]-0.01  #-0.1 should ensure earlier wins are always chosen over later ones
-            #print(" "*4*(self.depth-max_depth)+f"testing move: {move.to_ptn()}. value: {value}")
-            moves.append((value, move))
-        # print("Moves:")
-        # for m in moves:
-        #     print("(",m[0],",",m[1].to_ptn(),")")
-        if own_turn:
-            return max(moves, key=itemgetter(0))
-        else:
-            return min(moves, key=itemgetter(0))
+           
+            #_=board.move(move, player)
+            v,_ = (current_player if own_turn else self).minimax(new_board, max_depth-1, op, not own_turn)
+            #board.unmove(move, player)
 
+            
+            # if type(v) != float or type(m) != Move:
+            #     print(type(v), type(m))
+            #     raise Exception("Minimax returned something other than float and move")
+
+            v*=MINIMAX_DECAY
+
+            min_max = max if own_turn else min 
+            
+            if min_max(v,  best_value) == v:
+                best_moves =[(v,move)]
+                best_value = v
+                
+            elif v == best_value:
+                best_moves.append((v, move))
+
+        # can also return random choice from best_moves later, but determinism is good for testing
+        return best_moves[0] 
+
+
+            
 
         
     #evaluate the board based on what I think is important
@@ -818,3 +915,29 @@ if __name__ == "__main__":
 game = Game(MinimaxPlayer(), MinimaxPlayer(), 3, 0, DEPTH, DEPTH, None, True)
 game.play()
 print(game.move_string())
+
+
+"""
+TODO:
+1. clean up dfs and convert to loop based for potential perf improvements
+2. 
+
+AFTER TURNED IN:
+- make a function that calls an llm api to get a move and see how it does
+"""
+
+
+
+
+
+# minimax()
+# 1. check for terminal conditions:
+#   a) the game is over 
+#   b) we have reached max depth 
+# if terminal condition is reached, return the evaluation of the current board 
+
+# 2. look at the best move in the position for max, or the worst move in the position for min. 
+#  multiply the score by a number (0.99 or something) to incentivise ending the game sooner if its 
+#  win for the current player or prolonging the game if its a win for the current opponent 
+
+

@@ -15,8 +15,8 @@ CAPSTONES = {3:0, 4:0, 5:1, 6:1, 7:2, 8:2}
 NORMAL_STONES = {3:10, 4:15, 5:21, 6:30, 7:40, 8:50}
 
 #default depth for minimax
-DEPTH = 3
-MINIMAX_DECAY = 1.0
+DEPTH = 4
+MINIMAX_DECAY = 1
 
 #ANSI color escapes
 B_ON_W = "\033[30;107m"
@@ -524,44 +524,51 @@ class Board:
         #(there may be a way to do it incrementally, like store old dfs and use them instead
         #of recalculating every time but idk)
 
-        ub =  self.dfs(Direction.UP, Color.BLACK, [], [], (None, 0))
-        uw =   self.dfs(Direction.UP, Color.WHITE, [], [], (None, 0))
-        lb = self.dfs(Direction.LEFT, Color.BLACK, [], [], (self.size-1, None))
-        lw =   self.dfs(Direction.LEFT, Color.WHITE, [], [], (self.size-1, None))
+        ub =  self.dfs(Direction.UP, Color.BLACK, (None, 0))
+        uw =   self.dfs(Direction.UP, Color.WHITE, (None, 0))
+        lb = self.dfs(Direction.LEFT, Color.BLACK, (self.size-1, None))
+        lw =   self.dfs(Direction.LEFT, Color.WHITE, (self.size-1, None))
 
         return {Color.BLACK:ub or lb, Color.WHITE:uw or lw}
 
+    #TODO: test this
+    def dfs(self, node: Direction, col: Color, goal:tuple[int|None, int|None] = (None, None)) -> bool:
 
-    #PERF: change this to a loop based dfs instead of recursive
-    def dfs(self, node: Direction | tuple[int, int], col: Color, stack:list[tuple[int,int]], visited : list[tuple[int,int]], goal:tuple[int|None, int|None] = (None, None)) -> bool:
-        #TODO: VERY RUSHED JOB NEED TO FIX ASAP
-        valid_tile = lambda a, b : self.get_stack((a, b)) and self.get_stack((a, b))[-1].piece != PieceType.STANDINGSTONE and self.get_stack((a, b))[-1].color == col
+        stack: list[tuple[int, int]] = []
+        visited : set[tuple[int,int]] = set()
+
+        def valid_tile(a:int,b:int) -> bool:
+            stk = self.get_stack((a,b))
+            assert stk is not None
+
+            return bool(stk) and stk[-1].piece != PieceType.STANDINGSTONE and stk[-1].color == col
+
         match node:
             case Direction.UP:    stack = [(x, self.size-1) for x in range(0,self.size) if valid_tile(x,self.size-1)] 
             case Direction.RIGHT: stack = [(self.size - 1, y) for y in range(0,self.size) if valid_tile(self.size -1, y)]
             case Direction.DOWN:  stack = [(x, 0) for x in range(0,self.size) if valid_tile(x,0)] 
             case Direction.LEFT:  stack = [(0,y) for y in range(0,self.size) if valid_tile(0,y)] 
-            case n:
-                visited.append(n)
-                # return true if the traversal reaches the goal row/column
-                if n[1] == goal[1] or n[0] == goal[0]:
-                    # print(f"n[1] == goal[1] or n[0] == goal[0]. n:{n},  goal:{goal}")
-                    return True
-                # add neighbors to stack
-                for i in range(4):
-                    neighbor = self.offset_tile(n, DIRECTIONS[i])
-                    tile = self.get_stack(neighbor)
-                    if tile is not None and tile and tile[-1].color == col and tile[-1].piece != PieceType.STANDINGSTONE and neighbor not in visited:
+        
+        while stack:
+            n = stack.pop()
+            visited.add(n)
+
+            # return true if the traversal reaches the goal row/column
+            if n[1] == goal[1] or n[0] == goal[0]:
+                return True
+
+            # add neighbors to stack if they havn't been visited
+            for i in range(4):
+                neighbor = self.offset_tile(n, DIRECTIONS[i])
+                if max(neighbor) >= self.size or min(neighbor) < 0: continue
+                tile = self.get_stack(neighbor)
+                if tile: 
+                    p = tile[-1]
+                    if p.color == col and p.piece != PieceType.STANDINGSTONE and neighbor not in visited:
                         stack.append(neighbor)
 
         # if the stack is empty after trying to add stuff to it, no path exists 
-        if not stack:
-            return False
-
-        # print(stack)
-
-        # Search the next subtree
-        return self.dfs(stack.pop(), col, stack, visited, goal)
+        return False
 
     #pretty print the board
     def display(self) -> None:
@@ -749,7 +756,7 @@ class MinimaxPlayer(Player):
     def get_move(self, game : Game, opener:bool = False) -> Move:#TODO:
         assert self.depth is not None
         v, move = self.minimax(game.board,self.depth,game.current_opponent, True)
-        print("move: ", move.to_ptn(), " value: ", v)
+        # print("move: ", move.to_ptn(), " value: ", v)
         return move
 
     #TODO:  There are still some bugs (3 look ahead looses to 2 lookahead on a 3x3 board?)
@@ -762,6 +769,12 @@ class MinimaxPlayer(Player):
     def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool) -> tuple[float, Move]: #TODO: There is so much wrong with this but it works...
         # This is just raw minimax, we can add a different agent for alpha-beta if there is time
         # for move in board.enumerate_moves(self): min/max of minimax(depth-1, board.copy.move(move))
+
+        #set alpha and beta on the first
+        if self.depth == max_depth:
+            self.alpha:float|None = -inf if self.alpha is not None else None
+            self.beta:float|None = inf if self.beta is not None else None
+
 
         #check if game is over. if so, return evaluation of current board
         roads = board.is_road()
@@ -781,25 +794,25 @@ class MinimaxPlayer(Player):
 
         best_value = float('-inf') if own_turn else float('inf')
 
-        #PERF: instead of copying the object, we could instead add a method to undo a move
-        for move in possible_moves:
-            #create copy of board and player and make the move
-            new_board = deepcopy(board) 
-            current_player = deepcopy(self if own_turn else op)
-            _=new_board.move(move,current_player)
-           
-            #_=board.move(move, player)
-            v,_ = (current_player if own_turn else self).minimax(new_board, max_depth-1, op, not own_turn)
-            #board.unmove(move, player)
-
-            
-            # if type(v) != float or type(m) != Move:
-            #     print(type(v), type(m))
-            #     raise Exception("Minimax returned something other than float and move")
+        for move in possible_moves: 
+            # we move, recurse and unmove. This is much faster than copying each time
+            _=board.move(move, player)
+            v,_ = self.minimax(board, max_depth-1, op, not own_turn)
+            board.unmove(move, player)
 
             v*=MINIMAX_DECAY
 
             min_max = max if own_turn else min 
+            if self.alpha is not None and self.beta is not None:
+                if own_turn:
+                    if v >= self.beta:
+                        break
+                    self.alpha = max(self.alpha, v)
+                else:
+                    if v <= self.alpha:
+                        break
+                    self.beta = min(self.beta, v)
+
             
             if min_max(v,  best_value) == v:
                 best_moves =[(v,move)]
@@ -836,6 +849,9 @@ class MinimaxPlayer(Player):
         # posible moves (and punish giving op more move options)
         
         return flat_score if road_score == 0 else road_score
+
+    #TODO: iterative deepening
+
 
             
     @override
@@ -913,9 +929,10 @@ if __name__ == "__main__":
 """
 
 game = Game(MinimaxPlayer(), MinimaxPlayer(), 3, 0, DEPTH, DEPTH, None, True)
-game.play()
-print(game.move_string())
-
+try:
+    game.play()
+finally:
+    print(game.move_string())    
 
 """
 TODO:
@@ -941,3 +958,9 @@ AFTER TURNED IN:
 #  win for the current player or prolonging the game if its a win for the current opponent 
 
 
+"""
+    STATS:
+    27 min 1 sec for a 38 ply game of 2 minimax agents at depth 5 on 3x3
+    3  min 4 sec for a 34 ply game of 2 minimax agents at depth 4 on 3x3   -> (improved dfs gives 2:45)
+    91 min +     for a 31 ply game of 2 depth 4 agents on 4x4 (not complete)
+"""

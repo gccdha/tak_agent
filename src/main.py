@@ -15,8 +15,10 @@ CAPSTONES = {3:0, 4:0, 5:1, 6:1, 7:2, 8:2}
 NORMAL_STONES = {3:10, 4:15, 5:21, 6:30, 7:40, 8:50}
 
 #default depth for minimax
-DEPTH = 4
-MINIMAX_DECAY = 1
+DEPTH = 3 
+MINIMAX_DECAY = 0.99
+ALPHA_BETA = True
+RANDOM_MOVE_ORDERING = True
 
 #ANSI color escapes
 B_ON_W = "\033[30;107m"
@@ -58,7 +60,7 @@ def menu(params, message: str | None = None):                                   
         
         #print options
         for i,p in enumerate(keys):                                                                # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
-            print(f"{i}) {p}")
+            print(f"{i+1}) {p}")
         
         #get and validate input. repeat until input is valid
         try:
@@ -66,10 +68,10 @@ def menu(params, message: str | None = None):                                   
         except ValueError:
             print("ERROR: Please enter a number")
         else:
-            if choice in range(0, numkeys):
-                return params[keys[choice]]                                                        # pyright: ignore[reportUnknownVariableType]
+            if choice in range(1, numkeys+1):
+                return params[keys[choice-1]]                                                        # pyright: ignore[reportUnknownVariableType]
             else:
-                print(f"ERROR: Please enter a number between 0 and {numkeys-1} (inclusive)")
+                print(f"ERROR: Please enter a number between 1 and {numkeys} (inclusive)")
 
 # Menu specifically for getting the sequence of drops. (WARN: doesn't check if the drops make sense! 
 # It is up to the user to ensure that the drops are possible for the piece they want to move)
@@ -629,6 +631,7 @@ class Board:
                             possible_drops = generate_drops(self, square, dir, pickup)
                             for drops in possible_drops:
                                 moves.append(Move(square,dir,pickup, drops)) 
+        if RANDOM_MOVE_ORDERING: random.shuffle(moves)
         return moves
 
     # gives the tile "times" number of tiles in "dir" direction
@@ -667,7 +670,7 @@ class Player:
                  capstones : int = 0, komi : float = 0,
                  depth: int = DEPTH,
                  id : int = 0,
-                 ab : bool = False
+                 ab : bool = ALPHA_BETA
                  ):
         self.piece_color: Color = piece_color
         self.komi: float = komi
@@ -675,9 +678,8 @@ class Player:
         self.capstones: int = capstones
         self.depth: int = depth
         self.id: int = id
-        self.alpha: float | None = -inf if ab else None
-        self.beta: float | None = inf if ab else None
-
+        self.ab: bool = ab
+        
     def get_move(self, game : Game, opener:bool = False) -> "Move":   # pyright: ignore[reportUnusedParameter]
         raise NotImplementedError
 
@@ -704,7 +706,7 @@ class HumanPlayer(Player):
 
         #Get square
         rows = {chr(ord('A')+x):x for x in range(0,game.board.size)}
-        cols = {str(x):x for x in range(0,game.board.size)}
+        cols = {str(x+1):x for x in range(0,game.board.size)}
         square: tuple[int, int] = ( 
             menu(rows, "Choose a column:"),
             menu( cols, "Choose a row:")
@@ -726,7 +728,7 @@ class HumanPlayer(Player):
                              "Chose a direction to move:")
             count = 1
             if len(stack) > 1:
-                count = menu({str(x):x for x in range(1,min(game.board.size+1, len(stack)))}, 
+                count = menu({str(x):x for x in range(1,min(game.board.size, len(stack))+1)}, 
                              "How many pieces do you want to grab from this stack?")
 
             drops = drop_menu()
@@ -755,7 +757,7 @@ class MinimaxPlayer(Player):
     @override
     def get_move(self, game : Game, opener:bool = False) -> Move:#TODO:
         assert self.depth is not None
-        v, move = self.minimax(game.board,self.depth,game.current_opponent, True)
+        v, move = self.minimax(game.board,self.depth,game.current_opponent, True, -inf if self.ab else None, inf if self.ab else None)
         # print("move: ", move.to_ptn(), " value: ", v)
         return move
 
@@ -766,15 +768,7 @@ class MinimaxPlayer(Player):
     # find a way to make the agent not give up (currently the slight penalty for longer games means that 
     # if all paths would lead to the opponent winning based on the agent's play, it will end the game asap,
     # but it should instead try to prolong the game to see if the the opponent makes a mistake)
-    def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool) -> tuple[float, Move]: #TODO: There is so much wrong with this but it works...
-        # This is just raw minimax, we can add a different agent for alpha-beta if there is time
-        # for move in board.enumerate_moves(self): min/max of minimax(depth-1, board.copy.move(move))
-
-        #set alpha and beta on the first
-        if self.depth == max_depth:
-            self.alpha:float|None = -inf if self.alpha is not None else None
-            self.beta:float|None = inf if self.beta is not None else None
-
+    def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool, alpha: float|None = None, beta: float|None = None) -> tuple[float, Move]:
 
         #check if game is over. if so, return evaluation of current board
         roads = board.is_road()
@@ -797,31 +791,38 @@ class MinimaxPlayer(Player):
         for move in possible_moves: 
             # we move, recurse and unmove. This is much faster than copying each time
             _=board.move(move, player)
-            v,_ = self.minimax(board, max_depth-1, op, not own_turn)
+            v,_ = self.minimax(board, max_depth-1, op, not own_turn, alpha, beta)
             board.unmove(move, player)
+
+            if self.depth == max_depth:
+                print(move.to_ptn(), ":", v)
 
             v*=MINIMAX_DECAY
 
+            #WARN: it is important that these are in this order for alpha-beta. This is because
+            #moves will return their best/worst value bounded by alpha and beta, so they may be tied
+            #with the best move but actually have a worse value. The earliest instance of a value is always valid though.
             min_max = max if own_turn else min 
-            if self.alpha is not None and self.beta is not None:
-                if own_turn:
-                    if v >= self.beta:
-                        break
-                    self.alpha = max(self.alpha, v)
-                else:
-                    if v <= self.alpha:
-                        break
-                    self.beta = min(self.beta, v)
-
-            
-            if min_max(v,  best_value) == v:
+            if v == best_value:
+                best_moves.append((v, move))
+            elif min_max(v,  best_value) == v:
                 best_moves =[(v,move)]
                 best_value = v
-                
-            elif v == best_value:
-                best_moves.append((v, move))
 
-        # can also return random choice from best_moves later, but determinism is good for testing
+
+            if alpha is not None and beta is not None:
+                if own_turn:
+                    if v >= beta:
+                        break
+                    alpha = max(alpha, best_moves[0][0])
+                else:
+                    if v <= alpha:
+                        break
+                    beta = min(beta, best_moves[0][0])
+
+            
+
+        # can also return random choice NOT FOR ALPHA BETA YOU CANT I DONT THINK
         return best_moves[0] 
 
 
@@ -928,7 +929,7 @@ if __name__ == "__main__":
     stats.sort_stats("ncalls").print_stats()
 """
 
-game = Game(MinimaxPlayer(), MinimaxPlayer(), 3, 0, DEPTH, DEPTH, None, True)
+game = Game(MinimaxPlayer(), MinimaxPlayer(), 5, 0, DEPTH, DEPTH, None, True)
 try:
     game.play()
 finally:

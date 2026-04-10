@@ -15,8 +15,9 @@ CAPSTONES = {3:0, 4:0, 5:1, 6:1, 7:2, 8:2}
 NORMAL_STONES = {3:10, 4:15, 5:21, 6:30, 7:40, 8:50}
 
 #default depth for minimax
-DEPTH = 4
+DEPTH = 3
 MINIMAX_DECAY = 1
+ALPHA_BETA = True
 
 #ANSI color escapes
 B_ON_W = "\033[30;107m"
@@ -209,6 +210,19 @@ class Move:
                 flatten =  ""
 
             return count + square + dir + drops + flatten
+
+
+#for use with the hashing for the board. This gives a way to do moves that can be standardized under rotation
+class MoveWrapper:
+    __slots__ = ("move", "index", "direction")
+    def __init__(self,
+                 move: Move,
+                 index: int,
+                 direction: int|None
+                 ):
+        self.move: Move = move
+        self.index:int  = index
+        self.direction: int|None = direction
 
 
 class Game:
@@ -658,7 +672,127 @@ class Board:
                     case PieceType.FLATSTONE: pass
                     case x: return (x, i)
         return (None, 0)
-        
+
+
+    # return the location of the starting corner for the hash
+    def starting_corner(self) -> tuple[int, int]:
+        s = self.size-1
+        corners = [(0,0), (0,s), (s,0), (s,s)]
+
+        max = -inf
+        max_corner = (0,0)
+
+        for corner in corners:
+            stack = self.get_stack(corner)
+            assert stack is not None
+
+            if not stack:
+                continue
+            
+            id:int = 0
+
+            #every index in the stack gets a unique power of 2
+            for i,piece in enumerate(stack):
+                c = piece.color
+                if c == Color.WHITE:
+                    id += 2**i
+
+            # a 1 is added to prevent things with leading zeroes, and a 2 bit code 
+            # representing the top piece type is added
+            id = (id+2**len(stack))*4+stack[-1].piece.value
+            
+            # find the corner with the highest number (this is an arbitrary metric but uniqeuly
+            # relates to each possible stack which is all that matters for selecting the same corner)
+            if id > max:
+                max_corner = corner
+
+        return max_corner
+
+
+    # return a hash of the board object that is invariant under rotation
+    # output tuple of form (hash for board, (move's square's index in spiral, Direction((move direction-direction clockwise from corner)%4)))
+    def zhash(self, move : Move|None) -> tuple[str,MoveWrapper|None]:
+
+        #get the enum number for the direction that is clockwise from this corner 
+        start_dir = 0
+        s = self.size-1
+        corner = self.starting_corner()
+        if   corner == (0,0): start_dir = 0 
+        elif corner == (0,s): start_dir = 1 
+        elif corner == (s,s): start_dir = 2 
+        elif corner == (s,0): start_dir = 3
+        else: raise Exception("invalid corner for hash")
+
+        #offset the corner one space off the board away from the clockwise direction
+        tile = self.offset_tile(corner, Direction((start_dir+2)%4))
+        output:str = ""
+        dir = start_dir
+        index = 0
+        move_index = -1
+        # go all the way across the board spiraling clockwise until center
+        for i in range(self.size*2, 1, -1):
+            for _ in range(0,i//2):
+                tile = self.offset_tile(tile, Direction(dir))
+                if move is not None and move.square == tile:
+                    move_index = index
+                # print(tile)
+                stack = self.get_stack(tile)
+                assert stack is not None
+
+                index+=1
+                if not stack: 
+                    output+="0"
+
+                    continue
+                for piece in stack:
+                    output+=piece.color.name[0]
+                output+=stack[-1].piece.name[0]
+
+            dir = (dir+1)%4
+                 
+        if move is None:
+            return (output, None)
+
+        assert move_index >= 0
+        out_move = copy(move)
+        if move.direction is not None:
+            relative_direction = (move.direction.value - start_dir)%4
+        else:
+            relative_direction = None
+
+        return (output, MoveWrapper(out_move, move_index, relative_direction))
+
+    def decode_move(self, move: MoveWrapper) -> Move:
+        #get the enum number for the direction that is clockwise from this corner 
+        start_dir = 0
+        s = self.size-1
+        corner = self.starting_corner()
+        if   corner == (0,0): start_dir = 0 
+        elif corner == (0,s): start_dir = 1 
+        elif corner == (s,s): start_dir = 2 
+        elif corner == (s,0): start_dir = 3
+        else: raise Exception("invalid corner for decoding move")
+
+        #offset the corner one space off the board away from the clockwise direction
+        tile = self.offset_tile(corner, Direction((start_dir+2)%4))
+        dir = start_dir
+        index = 0
+
+        # go all the way across the board spiraling clockwise until we find the tile
+        for i in range(self.size*2, 1, -1):
+            for _ in range(0,i//2):
+                tile = self.offset_tile(tile, Direction(dir))
+                # print(move.index," ", index)
+                if move.index == index:
+                    out_move = copy(move.move)
+                    out_move.square = tile
+                    out_move.direction = Direction((start_dir + move.direction)%4) if move.direction is not None else None 
+                    return out_move
+                index+=1
+            dir = (dir+1)%4
+
+        raise Exception("made it to the end of decode function without finding the tile")
+                 
 #base player class
 class Player:
     def __init__(self,
@@ -667,7 +801,7 @@ class Player:
                  capstones : int = 0, komi : float = 0,
                  depth: int = DEPTH,
                  id : int = 0,
-                 ab : bool = False
+                 ab : bool = ALPHA_BETA
                  ):
         self.piece_color: Color = piece_color
         self.komi: float = komi
@@ -675,8 +809,8 @@ class Player:
         self.capstones: int = capstones
         self.depth: int = depth
         self.id: int = id
-        self.alpha: float | None = -inf if ab else None
-        self.beta: float | None = inf if ab else None
+        self.ab: bool = ab
+        self.evaluationdict: dict[str,float] = {}
 
     def get_move(self, game : Game, opener:bool = False) -> "Move":   # pyright: ignore[reportUnusedParameter]
         raise NotImplementedError
@@ -750,13 +884,23 @@ class RandomPlayer(Player):
     def player_type(self) -> str:
         return "Random"
 
+
+
 class MinimaxPlayer(Player):    
 
     @override
     def get_move(self, game : Game, opener:bool = False) -> Move:#TODO:
         assert self.depth is not None
+        self.nodes: list[float]  = [0.0 for _ in range(0,self.depth+1)]
+        self.boarddict: dict[str,list[MoveWrapper]] = dict()
         v, move = self.minimax(game.board,self.depth,game.current_opponent, True)
+        # v,move = self.iterative_deepening(game.board, game.current_opponent)
         # print("move: ", move.to_ptn(), " value: ", v)
+        # print("Nodes: ", self.nodes)
+        # prop = []
+        # for i in range(1, len(self.nodes)):
+            # prop.append(self.nodes[i] / self.nodes[i-1])
+        # print("Proportions: ",  prop)
         return move
 
     #TODO:  There are still some bugs (3 look ahead looses to 2 lookahead on a 3x3 board?)
@@ -766,15 +910,11 @@ class MinimaxPlayer(Player):
     # find a way to make the agent not give up (currently the slight penalty for longer games means that 
     # if all paths would lead to the opponent winning based on the agent's play, it will end the game asap,
     # but it should instead try to prolong the game to see if the the opponent makes a mistake)
-    def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool) -> tuple[float, Move]: #TODO: There is so much wrong with this but it works...
+    def minimax(self, board:Board, max_depth:int, op:Player, own_turn:bool, alpha: float|None = None, beta: float|None = None) -> tuple[float, Move]: #TODO: There is so much wrong with this but it works...
         # This is just raw minimax, we can add a different agent for alpha-beta if there is time
         # for move in board.enumerate_moves(self): min/max of minimax(depth-1, board.copy.move(move))
 
-        #set alpha and beta on the first
-        if self.depth == max_depth:
-            self.alpha:float|None = -inf if self.alpha is not None else None
-            self.beta:float|None = inf if self.beta is not None else None
-
+        # self.nodes[self.depth - max_depth] += 1
 
         #check if game is over. if so, return evaluation of current board
         roads = board.is_road()
@@ -785,51 +925,76 @@ class MinimaxPlayer(Player):
             or board.open_spaces() == 0
             or max_depth == 0):
             return (self.evaluate_board(board, 0, own_turn), Move((-1,-1))) #TODO: Komi
-
-        best_moves: list[tuple[float,Move]] = [] #TODO: use a priority Queue and pop into a list until one of the moves is lower scored, then choose randomly from that
-
-
+ 
         player = self if own_turn else op
-        possible_moves = board.enumerate_moves(player)
+        possible_moves = self.get_possible_moves(board, player)
 
         best_value = float('-inf') if own_turn else float('inf')
+        best_move: tuple[float,Move] = (best_value,possible_moves[0])
 
         for move in possible_moves: 
             # we move, recurse and unmove. This is much faster than copying each time
             _=board.move(move, player)
-            v,_ = self.minimax(board, max_depth-1, op, not own_turn)
+            v,_ = self.minimax(board, max_depth-1, op, not own_turn, alpha, beta)
             board.unmove(move, player)
+
+            if self.depth == max_depth:
+                print(move.to_ptn(), ":", v)
+                b,m = board.zhash(move)
+                print("hash: ", b, "\n Move: ", m.move.to_ptn(), " index: ", m.index, " dir: ", m.direction)
 
             v*=MINIMAX_DECAY
 
-            min_max = max if own_turn else min 
-            if self.alpha is not None and self.beta is not None:
-                if own_turn:
-                    if v >= self.beta:
-                        break
-                    self.alpha = max(self.alpha, v)
-                else:
-                    if v <= self.alpha:
-                        break
-                    self.beta = min(self.beta, v)
+            min_max = max if own_turn else min
+            if v == best_value:
+                b,p = board.zhash(move)
+                assert p is not None
+                self.boarddict[b].append(p)
 
-            
-            if min_max(v,  best_value) == v:
-                best_moves =[(v,move)]
+            elif min_max(v,  best_value) == v:
+                b,p = board.zhash(move)
+                assert p is not None
+                self.boarddict[b] = [p]
+                best_move =(v,move)
                 best_value = v
-                
-            elif v == best_value:
-                best_moves.append((v, move))
 
+
+
+            if alpha is not None and beta is not None:
+                if own_turn:
+                    if best_value >= beta:
+                        # print("Pruning")
+                        break
+                    alpha = max(alpha, best_value)
+                else:
+                    if best_value <= alpha:
+                        # print("Pruning")
+                        break
+                    beta = min(beta, best_value)
+            
         # can also return random choice from best_moves later, but determinism is good for testing
-        return best_moves[0] 
+        assert best_move[0] == best_value
+        return best_move 
 
 
             
+    def get_possible_moves(self, board:Board, player:Player) -> list[Move]:
+        #TODO: should probably use priority queue or something (?)
+        random = board.enumerate_moves(player)
+        b,_=board.zhash(None) 
+        best_moves = self.boarddict.get(b, [])
+        best_moves = [board.decode_move(x) for x in best_moves]
+        best_moves.extend(random)
 
+        return list(dict.fromkeys(best_moves))
         
     #evaluate the board based on what I think is important
     def evaluate_board(self, board:Board, komi:float, own_turn:bool, ) -> float:
+        b,_ = board.zhash(None)
+        score = self.evaluationdict.get(b)
+        if score is not None:
+            return score
+
         op_color = Color((self.piece_color.value + 1)%2)
         flat_count = board.flat_count() #dict color  -> int
         flat_score = flat_count[self.piece_color]-flat_count[op_color]
@@ -847,11 +1012,38 @@ class MinimaxPlayer(Player):
         # Ideas: Hard caps, discourage stacks above carry limit, add small bonus for walls
         # add small punishment every turn to force offensive play, add bonus for the number of 
         # posible moves (and punish giving op more move options)
-        
-        return flat_score if road_score == 0 else road_score
+         
+        score =  flat_score if road_score == 0 else road_score
+        self.evaluationdict[b] = score
+        return score
 
     #TODO: iterative deepening
 
+    def iterative_deepening(self, board:Board, op:Player) -> tuple[float, Move]:
+        output = self.minimax(game.board, 1, op, True)
+        max_level = 1
+
+        print(f"tring range from 2 to {self.depth+1}")
+        for i in range(2,self.depth+1):
+            output = self.minimax(game.board, i, op, True, -inf if self.ab else None, inf if self.ab else None)
+            max_level = i
+            print("level: ", max_level)
+        return output
+
+        
+        # try:
+        #     print(f"tring range from 2 to {self.depth+1}")
+        #     for i in range(2,self.depth+1):
+        #         print("i")
+        #         output = self.minimax(game.board, i, op, True)
+        #         max_level = i
+        #         print("level: ", max_level)
+        # except KeyboardInterrupt:
+        #     print(f"Interupted minimax! Max level: {max_level}")
+        # except:
+        #     print("OTHER ERROR")
+        # finally:
+        #     return output
 
             
     @override
@@ -928,15 +1120,25 @@ if __name__ == "__main__":
     stats.sort_stats("ncalls").print_stats()
 """
 
+for i in range(10, 0):
+    print(i)
+
+
 game = Game(MinimaxPlayer(), MinimaxPlayer(), 3, 0, DEPTH, DEPTH, None, True)
 try:
+    profiler = cProfile.Profile()
+    profiler.enable()
     game.play()
+    profiler.disable()
+    stats = pstats.Stats(profiler)
+    stats.sort_stats("cumtime").print_stats()
+
 finally:
     print(game.move_string())    
 
 """
 TODO:
-1. clean up dfs and convert to loop based for potential perf improvements
+1. Last move is not counted or printed when using move_string()
 2. 
 
 AFTER TURNED IN:
@@ -946,21 +1148,35 @@ AFTER TURNED IN:
 
 
 
-
-# minimax()
-# 1. check for terminal conditions:
-#   a) the game is over 
-#   b) we have reached max depth 
-# if terminal condition is reached, return the evaluation of the current board 
-
-# 2. look at the best move in the position for max, or the worst move in the position for min. 
-#  multiply the score by a number (0.99 or something) to incentivise ending the game sooner if its 
-#  win for the current player or prolonging the game if its a win for the current opponent 
-
-
 """
     STATS:
     27 min 1 sec for a 38 ply game of 2 minimax agents at depth 5 on 3x3
     3  min 4 sec for a 34 ply game of 2 minimax agents at depth 4 on 3x3   -> (improved dfs gives 2:45)
     91 min +     for a 31 ply game of 2 depth 4 agents on 4x4 (not complete)
+"""
+
+
+"""
+    Idea: make a hash that scores each corner. It then starts hashing from that corner and goes in a 
+spiral arround the board. This ensures that if two boards are the same rotationally, they will
+be hashed the same way. To represent the square of the move, just use an index into the spiral.
+To represent the direction of a move, we can just say which axis is should be moved in and if it 
+should be moved towards or away from the starting tile of the spiral
+
+first: implemet hashing algorithm
+second: imlement move "hashing"
+third: implement retrieving move from move "hash"
+
+
+
+def board.largest_corner() -> (int, int) => returns index of largest scored corner of any board 
+def board.zhash(move: Move) -> (str, str) => returns rotationally invariant hash of board AND move 
+def board.decode_move(move: str) -> Move => returns real move from "hashed" move based on board
+
+
+uses: we can put scores for each board hash in a dict to cache the evaluation function
+we can also hash board positions with their list of best moves for minimax iterative deepening
+
+To hash stacks of pieces, we start with a leading 1 to mark the beginnig, then 0 for black and 1 for white, end with 00 if flatstone, 01 if standing and 10 if cap
+
 """

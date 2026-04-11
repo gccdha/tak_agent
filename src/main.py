@@ -1,3 +1,4 @@
+from concurrent.futures import ProcessPoolExecutor
 from copy import copy, deepcopy
 from enum import Enum
 import functools
@@ -5,6 +6,7 @@ from math import inf
 from operator import itemgetter
 from queue import PriorityQueue
 import random
+from time import perf_counter
 from typing import override
 import cProfile
 import pstats
@@ -16,8 +18,8 @@ NORMAL_STONES = {3:10, 4:15, 5:21, 6:30, 7:40, 8:50}
 
 #default depth for minimax
 DEPTH = 3 
-MINIMAX_DECAY = 0.99
-ALPHA_BETA = True
+MINIMAX_DECAY = 1
+ALPHA_BETA = False
 RANDOM_MOVE_ORDERING = True
 
 #ANSI color escapes
@@ -794,8 +796,8 @@ class MinimaxPlayer(Player):
             v,_ = self.minimax(board, max_depth-1, op, not own_turn, alpha, beta)
             board.unmove(move, player)
 
-            if self.depth == max_depth:
-                print(move.to_ptn(), ":", v)
+            # if self.depth == max_depth:
+            #     print(move.to_ptn(), ":", v)
 
             v*=MINIMAX_DECAY
 
@@ -929,11 +931,131 @@ if __name__ == "__main__":
     stats.sort_stats("ncalls").print_stats()
 """
 
-game = Game(MinimaxPlayer(), MinimaxPlayer(), 5, 0, DEPTH, DEPTH, None, True)
-try:
+
+#
+# game = Game(MinimaxPlayer(), MinimaxPlayer(), 5, 0, DEPTH, DEPTH, None, True)
+# try:
+#     game.play()
+# finally:
+#     print(game.move_string())    
+#
+
+
+
+
+
+#-========================Final Testing====================-
+
+game4 = lambda size,depth: Game(MinimaxPlayer(), MinimaxPlayer(), size, 0, depth, depth+1, None, False)
+game3 = lambda size,depth: Game(MinimaxPlayer(), MinimaxPlayer(), size, 0, depth+1, depth, None, False)
+game2 = lambda size,depth:Game(MinimaxPlayer(), MinimaxPlayer(), size, 0, depth, depth, None, False)
+game1 = lambda size,depth: Game(RandomPlayer(), MinimaxPlayer(), size, 0, depth, depth, None, False)
+games = [game1, game2, game3, game4]
+#
+#
+def run_game(args:tuple[int,int,int]):
+    p, size, depth = args
+    game = games[p](size, depth)
+
     game.play()
-finally:
-    print(game.move_string())    
+    moves = len(game.moves)
+    winner = game.winner()
+
+    return moves, winner
+#
+#
+#
+# def main():
+#     num_games = 10
+#     for size in range(3,8):
+#         for depth in range(1, 4):
+#             for p in range(0,4): #true for minimax
+#                 match p:
+#                     case 0: print(f"{size}x{size} | Random vs Minimax(depth:{depth})")
+#                     case 1: print(f"{size}x{size} | Minimax(depth:{depth}) vs Minimax(depth:{depth})")
+#                     case 2: print(f"{size}x{size} | Minimax(depth:{depth+1}) vs Minimax(depth:{depth})")
+#                     case 3: print(f"{size}x{size} | Minimax(depth:{depth}) vs Minimax(depth:{depth+1})")
+#                     case _: pass
+#                 game = games[p](size, depth)
+#
+#                 win1 = 0 
+#                 win2 = 0 
+#                 tie = 0
+#                 total_moves = 0
+#
+#                 start = perf_counter()
+#
+#
+#
+#                 with ProcessPoolExecutor() as executor:
+#                     args_list = [(p, size, depth) for _ in range (num_games)]
+#                     results = list(executor.map(run_game,args_list))
+#
+#                 for moves, winner in results:
+#
+#                     total_moves += moves
+#                     match winner:
+#                         case 1: win1+=1 
+#                         case 2: win2+=1
+#                         case 0: tie+=1
+#                         case _: print("GAME ENDED WITH NONE")
+#
+#
+#
+#
+#                 # for _ in range(0, num_games):
+#                 #     game.play()
+#                 #     total_moves += len(game.moves)
+#                 #     match game.winner():
+#                 #         case 1: win1+=1 
+#                 #         case 2: win2+=1
+#                 #         case 0: tie+=1
+#                 #         case _: print("GAME ENDED WITH NONE")
+#
+#                 end = perf_counter()
+#                 ms = (end-start)*1000
+#
+#                 print(f"p1: {win1}, p2: {win2}, tie: {tie}, time: {ms}ms for {num_games} games ({ms/total_moves}ms/move on average)")
+#
+# if __name__ == "__main__": 
+#     main()
+
+
+
+
+def main():
+
+
+    start = perf_counter()
+    results = []
+    for i in range(0,100):
+        print(f"running game {i}")
+        results.append(run_game((2, 3, 3)))
+    end = perf_counter()
+
+    win1 = 0 
+    win2 = 0 
+    tie = 0
+    total_moves = 0
+
+
+    for moves, winner in results:
+        total_moves += moves
+        match winner:
+            case 1: win1+=1 
+            case 2: win2+=1
+            case 0: tie+=1
+            case _: print("GAME ENDED WITH NONE")
+
+    ms = (end-start)*1000
+
+    print(f"p1: {win1}, p2: {win2}, tie: {tie}, time: {ms}ms for 100 games ({ms/total_moves}ms/move on average)")
+
+
+if __name__ == "__main__": 
+    main()
+
+
 
 """
 TODO:
@@ -965,3 +1087,5 @@ AFTER TURNED IN:
     3  min 4 sec for a 34 ply game of 2 minimax agents at depth 4 on 3x3   -> (improved dfs gives 2:45)
     91 min +     for a 31 ply game of 2 depth 4 agents on 4x4 (not complete)
 """
+
+
